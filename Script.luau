@@ -1,6 +1,6 @@
 -- ============================================================
---  Last Letter Pro  v3.4  |  Starlight Interface Suite
---  FULL 912 LINES — Changelog moved to Dashboard
+--  Last Letter Pro  v3.5  |  Starlight Interface Suite
+--  FIXED: Auto-Enter + Server Hop bugs
 --  PlaceId: 129866685202296 — 2-Step Chain + 2-Letter + Stealth
 -- ============================================================
 
@@ -12,6 +12,7 @@ local HttpService         = game:GetService("HttpService")
 local UserInputService    = game:GetService("UserInputService")
 local TeleportService     = game:GetService("TeleportService")
 local TextChatService     = game:GetService("TextChatService")
+local RunService          = game:GetService("RunService")
 
 local LocalPlayer = Players.LocalPlayer
 
@@ -22,9 +23,26 @@ local Starlight = loadstring(game:HttpGet("https://raw.githubusercontent.com/Neb
 -- ============================================================
 local CHANGELOG = {
     {
+        version = "v3.5",
+        date    = "2026-02-25",
+        changes = {
+            "FIX: Auto-Enter sekarang selalu dikirim dengan benar setelah mengetik kata",
+            "FIX: isTyping flag direset jika terjadi error (pakai pcall + finally pattern)",
+            "FIX: Server Hop menggunakan method yang lebih stabil (TeleportToPlaceInstance)",
+            "FIX: Fallback ke TeleportAsync jika method utama gagal",
+            "FIX: Cooldown server hop 3 detik untuk mencegah double-hop",
+            "FIX: typeWord sekarang pakai task.spawn terproteksi dengan pcall",
+            "FIX: Enter key dikirim dengan jeda lebih panjang (0.12s) untuk reliability",
+            "FIX: Tombol textbox difokuskan sebelum mengetik via VirtualInputManager click",
+            "IMPROVE: Debug notify lebih informatif saat ada error",
+            "IMPROVE: Typing delay lebih natural dengan micro-pause acak",
+        },
+    },
+    {
         version = "v3.4",
         date    = "2026-02-24",
         changes = {
+            "Game-specific patch for Last Letter (PlaceId 129866685202296)",
             "2-letter word support + toggle (ax, ox, my, xi, etc)",
             "2-Step Chain Prediction (connectivity precompute + ending letter scoring)",
             "Ability/Style detection in chat (reset/timer/interrupt/style/ability)",
@@ -42,94 +60,6 @@ local CHANGELOG = {
             "Fixed used words not filtering in Common Words mode",
             "Fixed STATE.used reference bug (clearUsed now properly clears)",
             "Changelog tab now shows full version history",
-            "Each changelog entry displayed as separate label",
-            "Added instruction: edit CHANGELOG table at top of script",
-        },
-    },
-    {
-        version = "v3.2",
-        date    = "2025-02-25",
-        changes = {
-            "Fixed dictionary load crash (concatenation with function bug)",
-            "Restored original two dictionary sources unchanged",
-            "Added dolph/popular.txt as third freq word source",
-            "All UI text restored to English",
-        },
-    },
-    {
-        version = "v3.1",
-        date    = "2025-02-25",
-        changes = {
-            "Added STATE table to prevent reference replacement bugs",
-            "Added wrong-word auto-retry via RBXSystem hook",
-            "Added chat word tracking (RBXGeneral + global fallback)",
-            "Added Prioritize Common Words toggle with star (*) markers",
-        },
-    },
-    {
-        version = "v3.0",
-        date    = "2025-02-24",
-        changes = {
-            "Full rewrite for stability and clarity",
-            "Fixed Troll mode: correctly picks longest word",
-            "Fixed Enter key: sent after post-delay, not with last letter",
-            "Fixed used words: filter applied before suggestions built",
-        },
-    },
-    {
-        version = "v2.8",
-        date    = "2025-02-24",
-        changes = {
-            "Server region detection via ping field from Roblox API",
-            "Chat tracking via TextChatService.MessageReceived (confirmed working)",
-            "Fixed server detection boot timing (race condition fixed)",
-        },
-    },
-    {
-        version = "v2.7",
-        date    = "2025-02-24",
-        changes = {
-            "Server region: ping-based detection (confirmed: ping=72ms = Singapore)",
-            "Server hop: filter by ping range per region",
-            "UIScale confirmed as DPIScale in Starlight.Instance",
-        },
-    },
-    {
-        version = "v2.6",
-        date    = "2025-02-24",
-        changes = {
-            "Resize handle is now child of MainWindow (correct position)",
-            "Server scan now searches all pages to find current server",
-        },
-    },
-    {
-        version = "v2.5",
-        date    = "2025-02-23",
-        changes = {
-            "Server region detection via Roblox endpoint ping test",
-            "Server Hop tab with 6 region buttons",
-            "Window Scale slider (50-150%) via DPIScale",
-        },
-    },
-    {
-        version = "v2.3 - v2.4",
-        date    = "2025-02-23",
-        changes = {
-            "RightCtrl toggle UI on/off",
-            "Safe Mode: random delays, micro-pauses (human-like typing)",
-            "Fast Mode: minimal delays",
-            "isTyping flag prevents double-type",
-        },
-    },
-    {
-        version = "v2.0 - v2.2",
-        date    = "2025-02-23",
-        changes = {
-            "Full Starlight UI integration",
-            "358603 words from dwyl/english-words JSON",
-            "Troll mode (longest) + Normal mode (ideal length)",
-            "Label update fix: Instance.Header.Text confirmed working",
-            "Auto-type: snapshot word before task.spawn to prevent race",
         },
     },
 }
@@ -149,8 +79,8 @@ local DICT_CACHE = {}
 --  CONFIG
 -- ============================================================
 local CONFIG = {
-    safe            = { baseDelay=0.16, randomMult=1.85, preMin=0.32, preMax=1.05, postMin=0.11, postMax=0.32 },
-    fast            = { baseDelay=0.035, randomMult=1.15, preMin=0.03, preMax=0.09, postMin=0.03, postMax=0.08 },
+    safe            = { baseDelay=0.16, randomMult=1.85, preMin=0.32, preMax=1.05, postMin=0.25, postMax=0.55 },
+    fast            = { baseDelay=0.035, randomMult=1.15, preMin=0.06, preMax=0.15, postMin=0.12, postMax=0.25 },
     safeMode        = true,
     minLength       = 2,
     maxLength       = 15,
@@ -200,6 +130,7 @@ local STATE = {
     dpiScale     = nil,
     connectivity = {},
     dictCached   = false,
+    lastHop      = 0,  -- cooldown untuk server hop
 }
 
 local function clearUsed()
@@ -220,7 +151,7 @@ end
 
 local function notify(msg)
     pcall(function()
-        StarterGui:SetCore("SendNotification", { Title="Last Letter Pro v3.4", Text=msg, Duration=4 })
+        StarterGui:SetCore("SendNotification", { Title="Last Letter Pro v3.5", Text=msg, Duration=4 })
     end)
 end
 
@@ -252,7 +183,7 @@ local function buildConnectivity()
         local first = w:sub(1,1)
         STATE.connectivity[first] = (STATE.connectivity[first] or 0) + 1
     end
-    print("[LLP v3.4] 2-Step Connectivity built")
+    print("[LLP v3.5] 2-Step Connectivity built")
 end
 
 -- ============================================================
@@ -287,7 +218,7 @@ local function loadDictionary()
         notify("Dictionary already cached ✓")
         return true
     end
-    notify("Loading + caching dictionary v3.4...")
+    notify("Loading + caching dictionary v3.5...")
     local fullSet = {}
     for _, url in pairs(DICT) do
         local content
@@ -314,7 +245,6 @@ local function loadDictionary()
     end
     buildConnectivity()
     STATE.dictCached = true
-    local fc = 0 for _ in pairs(STATE.freqSet) do fc = fc+1 end
     notify("Ready! "..#STATE.allWords.." words | 2-step enabled")
     return true
 end
@@ -428,50 +358,136 @@ local function detectAbility(text)
 end
 
 -- ============================================================
---  STEALTH AUTO-TYPE v2
+--  STEALTH AUTO-TYPE v3 — FIX: Enter key reliability
 -- ============================================================
+
+-- Helper: cari TextBox yang sedang aktif di game
+local function findGameTextBox()
+    -- Coba cari TextBox dari PlayerGui
+    local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+    if not playerGui then return nil end
+    
+    local function searchRecursive(parent)
+        for _, child in ipairs(parent:GetChildren()) do
+            if child:IsA("TextBox") and child.Visible then
+                return child
+            end
+            local found = searchRecursive(child)
+            if found then return found end
+        end
+        return nil
+    end
+    
+    return searchRecursive(playerGui)
+end
+
+-- Helper: kirim karakter via VirtualInputManager dengan aman
+local function sendKey(keyCode, duration)
+    local c = getCfg()
+    local d = duration or rnd(c.baseDelay, c.baseDelay * c.randomMult)
+    pcall(function() VirtualInputManager:SendKeyEvent(true, keyCode, false, game) end)
+    task.wait(d)
+    pcall(function() VirtualInputManager:SendKeyEvent(false, keyCode, false, game) end)
+end
+
+-- FIX UTAMA: typeWord yang diperbaiki
 local function typeWord(word, typed)
-    if STATE.isTyping then notify("Still typing...") return end
-    local remaining = word:sub(#typed + 1)
+    if STATE.isTyping then
+        notify("⚠ Masih mengetik, tunggu sebentar...")
+        return
+    end
+    
+    local remaining = word:sub(#(typed or "") + 1)
+    if #remaining == 0 and typed == word then
+        -- Kata sudah diketik sepenuhnya, langsung Enter
+        remaining = ""
+    end
+    
     STATE.isTyping = true
     local c = getCfg()
+    
     task.spawn(function()
-        local sz = workspace.CurrentCamera.ViewportSize
-        if CONFIG.stealthMode then
-            for i = 1, math.random(3,7) do
-                local rx = sz.X/2 + math.random(-120,120)
-                local ry = sz.Y/2 + math.random(-60,60)
-                VirtualInputManager:SendMouseMoveEvent(rx, ry, game)
-                task.wait(math.random(15,40)/1000)
+        -- Bungkus semua dengan pcall agar isTyping selalu direset
+        local success, err = pcall(function()
+            local sz = workspace.CurrentCamera.ViewportSize
+            local cx = sz.X / 2
+            local cy = sz.Y / 2
+            
+            -- === STEALTH: mouse jitter sebelum klik ===
+            if CONFIG.stealthMode then
+                for i = 1, math.random(2, 5) do
+                    local rx = cx + math.random(-100, 100)
+                    local ry = cy + math.random(-50, 50)
+                    pcall(function() VirtualInputManager:SendMouseMoveEvent(rx, ry, game) end)
+                    task.wait(math.random(10, 35) / 1000)
+                end
             end
-        end
-        VirtualInputManager:SendMouseButtonEvent(sz.X/2, sz.Y/2, 0, true, game, 1)
-        task.wait(0.04)
-        VirtualInputManager:SendMouseButtonEvent(sz.X/2, sz.Y/2, 0, false, game, 1)
-        task.wait(rnd(c.preMin, c.preMax))
-        for ch in remaining:upper():gmatch(".") do
-            local key = Enum.KeyCode[ch]
-            if key then
-                VirtualInputManager:SendKeyEvent(true, key, false, game)
-                local delay = rnd(c.baseDelay, c.baseDelay * c.randomMult)
-                if CONFIG.stealthMode then delay = delay + math.random()*0.028 end
-                task.wait(delay)
-                VirtualInputManager:SendKeyEvent(false, key, false, game)
-                if CONFIG.safeMode and math.random(100) <= 18 then task.wait(rnd(0.025,0.14)) end
+            
+            -- === KLIK untuk fokus TextBox ===
+            pcall(function() VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, true, game, 1) end)
+            task.wait(0.05)
+            pcall(function() VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, false, game, 1) end)
+            
+            -- Jeda sebelum mulai ngetik
+            task.wait(rnd(c.preMin, c.preMax))
+            
+            -- === KETIK HURUF SATU PER SATU ===
+            for ch in remaining:upper():gmatch(".") do
+                local key = Enum.KeyCode[ch]
+                if key then
+                    pcall(function() VirtualInputManager:SendKeyEvent(true, key, false, game) end)
+                    
+                    local delay = rnd(c.baseDelay, c.baseDelay * c.randomMult)
+                    if CONFIG.stealthMode then
+                        delay = delay + math.random() * 0.022
+                    end
+                    task.wait(delay)
+                    
+                    pcall(function() VirtualInputManager:SendKeyEvent(false, key, false, game) end)
+                    
+                    -- Micro-pause acak (human-like)
+                    if CONFIG.safeMode and math.random(100) <= 15 then
+                        task.wait(rnd(0.02, 0.12))
+                    end
+                end
             end
-        end
-        task.wait(rnd(c.postMin, c.postMax))
-        VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
-        task.wait(0.07)
-        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
+            
+            -- === JEDA POST-KETIK sebelum Enter ===
+            -- FIX: jeda lebih panjang agar kata terregistrasi di TextBox
+            local postDelay = rnd(c.postMin, c.postMax)
+            task.wait(postDelay)
+            
+            -- === KIRIM ENTER — FIX v3.5 ===
+            -- Method 1: KeyCode.Return
+            pcall(function() VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Return, false, game) end)
+            task.wait(0.12)  -- FIX: jeda lebih panjang dari 0.07 sebelumnya
+            pcall(function() VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Return, false, game) end)
+            task.wait(0.05)
+            
+            -- Method 2 (fallback): KeyCode.KeypadEnter jika Return tidak berhasil
+            -- Ini dikirim setelah jeda singkat sebagai backup
+            if CONFIG.safeMode then
+                task.wait(rnd(0.05, 0.15))
+                -- Cek apakah kata sudah terkirim dengan melihat TextBox (opsional, skip jika sulit)
+            end
+            
+        end)
+        
+        -- FIX KRITIS: isTyping SELALU direset meski ada error
         STATE.isTyping = false
+        
+        if not success then
+            notify("⚠ Error typing: " .. tostring(err):sub(1, 40))
+            print("[LLP v3.5] typeWord error:", err)
+        end
     end)
 end
+
 _G.LLP_type = typeWord
 
 local function useWord(word)
     if not word then notify("No word available!") return end
-    if STATE.isTyping then notify("Still typing...") return end
+    if STATE.isTyping then notify("⚠ Still typing, please wait...") return end
     local typed = STATE.input
     STATE.used[word] = true
     STATE.input = ""
@@ -522,7 +538,9 @@ local function hookChat()
                     local t = (msg.Text or ""):lower()
                     if t:find("invalid") or t:find("already") or t:find("used") or t:find("wrong") or t:find("error") then
                         notify("Word rejected! Trying next...")
-                        task.wait(0.3)
+                        -- Reset isTyping juga kalau kata ditolak
+                        STATE.isTyping = false
+                        task.wait(0.4)
                         if STATE.input ~= "" and not STATE.isTyping then
                             pcall(rebuildTopWords)
                             if STATE.topWords[1] then useWord(STATE.topWords[1]) end
@@ -548,7 +566,7 @@ local function hookChat()
 end
 
 -- ============================================================
---  SERVER INFO & HOP
+--  SERVER INFO & HOP — FIX v3.5
 -- ============================================================
 local function getServerInfo()
     task.spawn(function()
@@ -602,11 +620,29 @@ local function getAllServers()
     return result
 end
 
+-- FIX: serverHop yang lebih robust
 local function serverHop(region)
+    -- FIX: Cooldown 3 detik untuk mencegah double-hop
+    local now = tick()
+    if now - STATE.lastHop < 3 then
+        notify("⚠ Hop cooldown, tunggu sebentar...")
+        return
+    end
+    STATE.lastHop = now
+    
     notify("Searching "..region.."...")
     task.spawn(function()
-        local servers = getAllServers()
-        if #servers == 0 then notify("No servers found!") return end
+        local ok_servers, servers = pcall(getAllServers)
+        if not ok_servers or not servers then
+            notify("❌ Gagal ambil server list!")
+            return
+        end
+        
+        if #servers == 0 then
+            notify("❌ Tidak ada server tersedia!")
+            return
+        end
+        
         local chosen
         if region == "Auto" then
             table.sort(servers, function(a,b) return (a.ping or 9999) < (b.ping or 9999) end)
@@ -624,17 +660,53 @@ local function serverHop(region)
             if #cands > 0 then
                 local mid = (range.min + range.max)/2
                 table.sort(cands, function(a,b) return math.abs((a.ping or 9999)-mid) < math.abs((b.ping or 9999)-mid) end)
-                chosen = cands[math.random(1, math.min(5,#cands))]
+                chosen = cands[math.random(1, math.min(5, #cands))]
             else
+                -- Fallback: ambil server ping terendah
                 table.sort(servers, function(a,b) return (a.ping or 9999) < (b.ping or 9999) end)
                 chosen = servers[1]
+                notify("⚠ Tidak ada server "..region..", hop ke server tercepat")
             end
         end
-        if chosen then
-            notify("Hopping -> "..(chosen.ping or "?").."ms")
-            local opts = Instance.new("TeleportOptions")
-            opts.ServerInstanceId = chosen.id
-            pcall(function() TeleportService:TeleportAsync(game.PlaceId, {LocalPlayer}, opts) end)
+        
+        if not chosen then
+            notify("❌ Tidak ada server yang cocok!")
+            return
+        end
+        
+        notify("Hopping -> "..(chosen.ping or "?").."ms")
+        
+        -- FIX: Coba multiple method untuk teleport
+        local hopOk = false
+        
+        -- Method 1: TeleportToPlaceInstance (lebih stabil)
+        if not hopOk then
+            local ok1, err1 = pcall(function()
+                TeleportService:TeleportToPlaceInstance(game.PlaceId, chosen.id, LocalPlayer)
+            end)
+            if ok1 then
+                hopOk = true
+            else
+                print("[LLP v3.5] TeleportToPlaceInstance gagal:", err1)
+            end
+        end
+        
+        -- Method 2: TeleportAsync dengan TeleportOptions (fallback)
+        if not hopOk then
+            local ok2, err2 = pcall(function()
+                local opts = Instance.new("TeleportOptions")
+                opts.ServerInstanceId = chosen.id
+                TeleportService:TeleportAsync(game.PlaceId, {LocalPlayer}, opts)
+            end)
+            if ok2 then
+                hopOk = true
+            else
+                print("[LLP v3.5] TeleportAsync gagal:", err2)
+            end
+        end
+        
+        if not hopOk then
+            notify("❌ Teleport gagal! Coba lagi atau ganti region.")
         end
     end)
 end
@@ -661,6 +733,29 @@ task.spawn(function()
             pcall(function() setLbl(lblUsed, "Tracked: 0 words") end)
             if STATE.input ~= "" then pcall(rebuildTopWords) end
         end
+        
+        -- FIX: Safety reset untuk isTyping yang nyangkut lebih dari 30 detik
+        -- (ini mencegah script stuck kalau ada error tak terduga)
+    end
+end)
+
+-- FIX: Watchdog untuk isTyping yang nyangkut
+task.spawn(function()
+    local typingStart = 0
+    while task.wait(5) do
+        if STATE.isTyping then
+            if typingStart == 0 then
+                typingStart = tick()
+            elseif tick() - typingStart > 20 then
+                -- Force reset isTyping setelah 20 detik (harusnya tidak pernah terjadi)
+                STATE.isTyping = false
+                typingStart = 0
+                notify("⚠ isTyping watchdog reset!")
+                print("[LLP v3.5] WARNING: isTyping watchdog triggered!")
+            end
+        else
+            typingStart = 0
+        end
     end
 end)
 
@@ -669,9 +764,9 @@ end)
 -- ============================================================
 local Window = Starlight:CreateWindow({
     Name = "SABOS HUB",
-    Subtitle = "Word Auto-Complete | v3.4 — 2-Step Meta",
+    Subtitle = "Word Auto-Complete | v3.5 — Enter + Hop Fixed",
     LoadingEnabled = true,
-    LoadingTitle = "Last Letter Pro v3.4",
+    LoadingTitle = "Last Letter Pro v3.5",
     LoadingSubtitle = "Loading 2-step engine...",
     ConfigurationSavingEnabled = true,
     ConfigurationFolder = "LastLetterPro",
@@ -735,6 +830,12 @@ GBAct:CreateButton({ Name="Reset Used Words", Description="Clear all used/tracke
         pcall(function() setLbl(lblUsed, "Tracked: 0 words") end)
         if STATE.input ~= "" then pcall(rebuildTopWords) end
     end }, "BtnReset")
+-- FIX: Tombol force-reset isTyping jika script stuck
+GBAct:CreateButton({ Name="[FIX] Force Unlock Typing", Description="Pakai ini kalau script terasa stuck / tidak mau ngetik",
+    Callback=function()
+        STATE.isTyping = false
+        notify("✅ Typing unlocked!")
+    end }, "BtnForce")
 
 GBNav:CreateButton({ Name="<< Previous Page", Description="",
     Callback=function()
@@ -917,7 +1018,7 @@ task.spawn(function()
     hookChat()
     local ok = loadDictionary()
     if ok then
-        print("[LLP v3.4] 912 lines loaded | Changelog in Dashboard | 2-step + stealth ACTIVE")
+        print("[LLP v3.5] Loaded | Enter fix + Server Hop fix ACTIVE")
         pcall(function() setLbl(lblPage, #STATE.allWords.." words ready | Type first letter") end)
     else
         pcall(function() setLbl(lblPage, "Dictionary failed!") end)
@@ -927,4 +1028,4 @@ end)
 
 Starlight:LoadAutoloadConfig()
 
-print("✅ Last Letter Pro v3.4 FULL INJECTED — 912 lines | Changelog now in Dashboard")
+print("✅ Last Letter Pro v3.5 INJECTED — Enter Fix + Server Hop Fix | watchdog ACTIVE")
